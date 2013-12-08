@@ -11,19 +11,21 @@ LiquidCrystal lcd(12, 11, 8, 10, 7, 9, 6);
 #define ENC_B 3
 #define ENC_PORT PIND
 
+#define ENC_SW 1
+
 #define RELAY 2
 
 #define TARGET_XY 0, 11
 #define TEMP_XY   1, 11 
-#define COMPRESSOR_DELAY 600
+#define COMPRESSOR_DELAY 900
+#define HYSTERISIS 100
 
 int target = 1800;
 byte displayCelcius = 1;
 int  since_run;  // seconds since the compressr was last run
 byte running = 0;
 unsigned long ticks = 0;
-
-char mode = 'C'; // mode is Heat or Cool
+byte coolMode = 1;
 
 /* returns change in encoder state (-1,0,1) */
 int8_t read_encoder()
@@ -49,6 +51,14 @@ void delay_update(int ms)
       EEPROM.write(0, target >> 8);
       EEPROM.write(1, target & 0xff);
     }     
+   
+    if ((ENC_PORT & (1 << ENC_SW)) == 0)
+    {
+      if (coolMode) coolMode = 0;
+      else coolMode = 1;
+      EEPROM.write(2, coolMode);
+    }
+    
     delay(1);
   }
 }
@@ -58,25 +68,28 @@ void setup(void)
   pinMode(RELAY, OUTPUT);
   digitalWrite(RELAY, LOW);
 
-  //  Serial.begin(19200);
-
-  // set up the LCD's number of rows and columns: 
-  lcd.begin(16, 2);
-  // Print a message to the LCD.
-  lcd.print("    Target ");
-
   /* Setup encoder pins as inputs */
   pinMode(ENC_A, INPUT);
   digitalWrite(ENC_A, HIGH);
   pinMode(ENC_B, INPUT);
   digitalWrite(ENC_B, HIGH);
+  pinMode(ENC_SW, INPUT);
+  digitalWrite(ENC_SW, HIGH);
+
+  //  Serial.begin(19200);
 
   target = EEPROM.read(0);
   target <<= 8;
   target += EEPROM.read(1);
+  coolMode = EEPROM.read(2);
 
   if (target < 100 || target > 6000)
     target = 1800;
+
+  // set up the LCD's number of rows and columns: 
+  lcd.begin(16, 2);
+  // Print a message to the LCD.
+  lcd.print( "    Target ");
 }
 
 void display_temperature(byte y, byte x, int temperature, byte celcius)
@@ -96,7 +109,7 @@ void display_temperature(byte y, byte x, int temperature, byte celcius)
 
   //  Serial.print(buf);
   lcd.setCursor(x, y);
-  lcd.print(buf);
+  lcd.print(buf);  
 }
 
 void compressor(byte on)
@@ -127,6 +140,27 @@ void compressor(byte on)
   lcd.setCursor(0, 0);
   lcd.print(buf);
 }
+
+void heat(byte on)
+{
+  char buf[20] = "    ";
+  if (on)
+  {
+      digitalWrite(RELAY, HIGH);
+      since_run = 0;
+      running   = 1;
+      strcpy(buf, "on  ");
+  }
+  else
+  {
+    running   = 0;
+    since_run++; // keep track of time since last compressor run
+    digitalWrite(RELAY, LOW);
+  }
+  lcd.setCursor(0, 0);
+  lcd.print(buf);
+}
+
 
 int get_temperature()
 {
@@ -167,7 +201,7 @@ int get_temperature()
 }
 
 void loop(void)
-{
+{   
   byte present = 0;
 
   // The DallasTemperature library can do all this work for you!
@@ -183,7 +217,7 @@ void loop(void)
   }
   else
   {
-    lcd.print("   Current ");
+    lcd.print(coolMode ? "C" : "H" "  Current ");
   }
 
   delay_update(1000);     // maybe 750ms is enough, maybe not
@@ -200,9 +234,13 @@ void loop(void)
   display_temperature(TEMP_XY, temp, displayCelcius);
   display_temperature(TARGET_XY, target, displayCelcius);  
 
-  if (mode == 'C')
+  if (coolMode)
   {
-    compressor(temp > target);
+    compressor(temp > target + (running ? -HYSTERISIS : HYSTERISIS));
+  }
+  else
+  {
+     heat( temp < target + (running ? HYSTERISIS : -HYSTERISIS));
   }
   ticks++;
 }
